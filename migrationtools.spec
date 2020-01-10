@@ -5,7 +5,7 @@
 
 Name:           migrationtools
 Version:        %{version}
-Release:        14%{?dist}
+Release:        15%{?dist}
 Summary:        Migration scripts for LDAP
 
 Group:          System Environment/Daemons
@@ -71,6 +71,9 @@ rm -rf $RPM_BUILD_ROOT
 %doc migration-tools.txt
 
 %changelog
+* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 47-15
+- Mass rebuild 2013-12-27
+
 * Thu Aug  8 2013  <jsafrane@redhat.com> - 47-14
 - Fixed importing /etc/hosts and /etc/services, duplicate entries
   are now skipped. (#916623)
