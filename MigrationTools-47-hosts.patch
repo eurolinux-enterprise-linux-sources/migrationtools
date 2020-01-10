@@ -1,0 +1,143 @@
+916623 - migrate_all_offline.sh fails on duplicity
+
+1) We should skip all hosts, which are already inserted into the database,
+hostname is the primary key there.
+
+2) When a service in /etc/services has different port for TCP and UPD,
+we must use different dn: for them - let's add '+udp' and '+tcp' prefix
+to them 
+
+3) LDAP is case insensitive, while /etc/services is case sensitive.
+Therefore skip all services, which would clash in LDAP.
+
+diff -up MigrationTools-47/migrate_hosts.pl.orig MigrationTools-47/migrate_hosts.pl
+--- MigrationTools-47/migrate_hosts.pl.orig	2013-08-08 11:33:36.098638903 +0200
++++ MigrationTools-47/migrate_hosts.pl	2013-08-08 11:33:47.250619710 +0200
+@@ -51,34 +53,56 @@ while(<INFILE>)
+ 	next if /^#/;
+ 	s/#(.*)$//;
+ 	local($hostaddr, $hostname, @aliases) = split(/\s+/);
+-	
+-	if ($use_stdout) {
+-		&dump_host(STDOUT, $hostaddr, $hostname, @aliases);
+-	} else {
+-		&dump_host(OUTFILE, $hostaddr, $hostname, @aliases);
+-	}
++	&add_host($hostaddr, $hostname, @aliases)
+ }
+ 
++if ($use_stdout) {
++	&dump_hosts(STDOUT);
++} else {
++	&dump_hosts(OUTFILE);
++}
++
++# hash hostname -> IPaddresses
++%hosts={};
+ 
+-sub dump_host
++sub add_host
+ {
+-	local($HANDLE, $hostaddr, $hostname, @aliases) = @_;
+-	local($dn);
++	local($hostaddr, $hostname, @aliases) = @_;
+ 	return if (!$hostaddr);
++	
++	if ($hosts{$hostname}) {
++		@addrs = @{$hosts{$hostname}};
++		push(@addrs, $hostaddr);
++		$hosts{$hostname} = [@addrs];
++	} else {
++		$hosts{$hostname} = [$hostaddr];
++	}
+ 
+-	print $HANDLE "dn: cn=$hostname,$NAMINGCONTEXT\n";
+-	print $HANDLE "objectClass: top\n";
+-	print $HANDLE "objectClass: ipHost\n";
+-	print $HANDLE "objectClass: device\n";
+-	print $HANDLE "ipHostNumber: $hostaddr\n";
+-	print $HANDLE "cn: $hostname\n";
+-	@aliases = uniq($hostname, @aliases);
+-	foreach $_ (@aliases) {
+-		if ($_ ne $hostname) {
+-			print $HANDLE "cn: $_\n";
++	foreach (@aliases) {
++		if ($hosts{$_}) {
++			@addrs = @{$hosts{$_}};
++			push(@addrs, $hostaddr);
++		} else {
++			@hosts{$_} = [$hostaddr];
++		}
++	}
++}
++
++sub dump_hosts
++{
++	my $HANDLE = shift;
++	for my $hostname ( keys %hosts ) {
++		print $HANDLE "dn: cn=$hostname,$NAMINGCONTEXT\n";
++		print $HANDLE "cn: $hostname\n";
++		print $HANDLE "objectClass: top\n";
++		print $HANDLE "objectClass: ipHost\n";
++		print $HANDLE "objectClass: device\n";
++		@addrs = @{$hosts{$hostname}};
++		for my $hostaddr (@addrs) {
++			print $HANDLE "ipHostNumber: $hostaddr\n";
+ 		}
++		print $HANDLE "\n";
+ 	}
+-	print $HANDLE "\n";
+ }
+ 
+ close(INFILE);
+diff -up MigrationTools-47/migrate_services.pl.orig MigrationTools-47/migrate_services.pl
+--- MigrationTools-47/migrate_services.pl.orig	2013-08-08 13:14:48.404960042 +0200
++++ MigrationTools-47/migrate_services.pl	2013-08-08 13:14:26.000000000 +0200
+@@ -186,6 +187,17 @@ sub build_service_records
+ 					$suffix = "+ipServicePort=" . &escape_metacharacters($port);
+ 				}
+ 
++                                # Add suffix also when UDP and TCP port differ, but the service name is the same
++                                if (exists $Rh_portmap->{$servicename}{"udp"} 
++                                                and exists $Rh_portmap->{$servicename}{"tcp"}) {
++                                        my @udpport = keys(%{$Rh_portmap->{$servicename}{'udp'}});
++                                        my @tcpport = keys(%{$Rh_portmap->{$servicename}{'tcp'}});
++
++                                        if (!(@udpport ~~ @tcpport)) {
++                                                $suffix = "-" . $proto;
++                                        }
++                                }
++
+ 				# Normalize aliases across protocols. Yet
+ 				# another uncomfortable compromise.
+ 				foreach (keys %{$Rh_services->{$port}{$servicename}{$proto}{'aliases'}}) {
+diff -up MigrationTools-47/migrate_services.pl.orig MigrationTools-47/migrate_services.pl
+--- MigrationTools-47/migrate_services.pl.orig	2013-08-08 13:21:16.191273547 +0200
++++ MigrationTools-47/migrate_services.pl	2013-08-08 13:42:14.497330286 +0200
+@@ -93,6 +93,8 @@ sub parse_services
+ 	my %protocols_found = ();
+ 
+ 	my $card = '';
++	my %loservices = (); # lower-case service names
++	my %services = (); # service names
+ 	readloop:
+ 	while(defined($card = <INFILE>))
+ 	{
+@@ -104,10 +106,15 @@ sub parse_services
+ 
+ 		# do not generate ddp services - it's AppleTalk, not IP
+                 if ($proto eq "ddp") { 
+-                    print STDERR "Skipping non-IP service '$servicename $portproto'\n";
++                    print STDERR "Skipping non-IP service '$servicename $portproto'.\n";
+                     next; 
+                 }
+-
++                if (exists $loservices{lc($servicename)} and !exists $services{$servicename}) {
++                    print STDERR "Skipping service '$servicename', it clashes with services '".$loservices{lc($servicename)}."' because LDAP is case-insensitive.\n";
++                    next;
++                }
++                $services{$servicename} = $servicename;
++                $loservices{lc($servicename)} = $servicename;
+ 		# Find services specifying a port range (e.g. X11.)
+ 		my $loport = '';
+ 		my $hiport = '';
